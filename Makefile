@@ -10,11 +10,11 @@ INCDIRS = -I$(CLAPACK)/SRC -I$(CLAPACK)
 F2CDIR  = $(CLAPACK)/F2CLIBS
 LDLIBS  = $(CLAPACK)/lapack_LINUX.a \
           $(CLAPACK)/blas_LINUX.a \
-          $(F2CDIR)/libf2c.a -lm 
+	  $(F2CDIR)/libf2c.a -lm 
 #$(LDLIBS)
 
 paco: paco.o 
-	$(CXX) -o $@ $^ $(CXXFLAGS) $(CLIBS) -L/usr/lib64/ -llapack -lblas -lm -lg2c 
+	$(CXX) -o $@ $^ $(CXXFLAGS) $(CLIBS) -L/usr/lib64/ -llapack #-lblas -lm -lg2c 
 
 paco.o: paco.cpp paco.hpp quad.hpp
 	$(CXX) $(CXXFLAGS) -c paco.cpp 

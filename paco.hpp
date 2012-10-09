@@ -1,10 +1,3 @@
-// TODO:
-// encapulate all tri stuff in tri class
-// virtualize EOS
-// do trapezoidal with outer iters
-// HYPRE stuff should go in own class a la cliff
-// calc energy conservation
-
 #include <iostream>
 #include <vector>
 #include <list>
@@ -70,24 +63,8 @@ public:
     double area;
     
     list<Basis> basisList[NQUAD];
-    // for now, just allocate extra memory...
-    double phi[NQUAD][100];
-    double gphi0[NQUAD][100];
-    double gphi1[NQUAD][100];
-    bool   active[NQUAD][100];
-
-    Tri() {
-      
-      FOR_IQ {
-	for(int ii = 0; ii < 100; ++ii) {
-	  phi[iq][ii] = 0.0;
-	  gphi0[iq][ii] = 0.0;
-	  gphi1[iq][ii] = 0.0;
-	  active[iq][ii] = false;
-	}
-      }
-      
-    }
+    
+    Tri() {}
     
     void calcArea() {
       area = 0.5*((ve_x[1][0]-ve_x[0][0])*(ve_x[2][1]-ve_x[0][1])-(ve_x[1][1]-ve_x[0][1])*(ve_x[2][0]-ve_x[0][0]));
@@ -139,8 +116,7 @@ public:
       }
     }
     
-    void resetBits() {
-      
+    void resetBits() {      
       // if all bits are set, then triangle has completely migrated across periodic boundary...
       if ((ve_bit[0] & XM_BIT) && (ve_bit[1] & XM_BIT) && (ve_bit[2] & XM_BIT)) 
 	FOR_IVE ve_bit[ive] &= ~XM_BIT;
@@ -186,10 +162,6 @@ public:
   double *rho_error;
   double (*u_error)[2];
   double *p_error;
-
-  double beta;
-  double alpha;
-  double eta;
 
   double gam;
   double mu;
@@ -278,7 +250,7 @@ public:
   }
 
   void setDt() {
-    dt = 0.1;
+    dt = 0.05;
   }
 
   void initLinearSolver() {
@@ -314,13 +286,9 @@ public:
   void init() {
     cout << "init()" << endl;
     
-    nsteps = 2000;
+    nsteps = 100;
     check_interval = 1;
     write_interval = 1;
-
-    beta = 2.56; //14.0;
-    alpha = 0.25;
-    eta = 0.5;
             
     gam = 1.4;
     mu = 0.0; //1.0;
@@ -331,8 +299,9 @@ public:
       for (int j = 0; j < ncells; ++j) 
 	cells.push_back(cell_list);
     
-    buildCartMesh(15, 15);   
-    
+    buildCartMesh(15, 16);   
+    //buildCartMesh(31, 32);   
+
     //assert(Mp == NULL);        
     Mp = new double[np];
     //assert(rhop == NULL);      
@@ -367,7 +336,7 @@ public:
     repairTris(); 
     updateCells();
     initPhisFromDelaunay();
-    //updatePhis();  
+    updatePhis();  
     updateVol();
 
     cout << "np: " << np << " ntris: " << triVec.size() << " nquad: " << NQUAD << endl;
@@ -392,18 +361,41 @@ public:
     //writeTri(filename);
   }
   
+  void checkCount() {
+    cout << "checkCount()" << endl;
+    int * count = new int[np];
+    FOR_IP count[ip] = 0;
+    
+    FOR_IT {
+      FOR_IVE {
+	++count[triVec[it].ve_ip[ive]];
+      }
+    }
+    
+    FOR_IP {
+      if (count[ip] != 6) {
+	cout << ip << " | " << count[ip] << endl;
+	getchar();
+      }
+    }
+    delete[] count;
+  }
+  
   void updateAfterAdvect() {
     repairTris();
     initPhisFromDelaunay();
-    //updatePhis();
+    updatePhis();
+    
     updateVol();
 
     buildMassMatrix();   
     solveForRho();
     solveForP();
     
+
     buildMomentumMatrix();   
     solveForU();
+    
   }
   
   void writeLp(char * filename) {
@@ -442,12 +434,12 @@ public:
     } 
     */
     /*
-    FOR_IP if (fabs(xp[ip][0] - 0.6666) < 0.01 && fabs(xp[ip][1r] - 0.6666) < 0.01) {
+    FOR_IP if (fabs(xp[ip][0] - 0.6666) < 0.5 && fabs(xp[ip][1] - 0.6666) < 0.5) {
       cout << ip << endl;
       getchar();
     }
     */
-    const int index = 128;
+    const int index = 136;
     
     FOR_IT {    
       if ((triVec[it].ve_bit[0] == 0) && (triVec[it].ve_bit[1] == 0) && (triVec[it].ve_bit[2] == 0)) {
@@ -497,12 +489,13 @@ public:
 	  for (typename list<Basis>::iterator jb = triVec[it].basisList[iq].begin(); 
 	       jb != triVec[it].basisList[iq].end(); ++jb) {
 	    const int jp = jb->ip;
-	    Mfull[ip + jp*np] += weight*ib->phi*jb->phi;
+	    Mfull[ip + jp*np] += weight*(ib->phi)*(jb->phi);
 	  }
 	}
       }
     }
 
+      
     // build csr...
     assert(nbopa_i != NULL);
     // first count...
@@ -510,7 +503,7 @@ public:
     for (int iter = 0; iter < 2; iter++) {
       FOR_IP {
 	for (int ip_nbr = 0; ip_nbr < np; ++ip_nbr) {
-	  if (Mfull[ip*np + ip_nbr] > 0.0) {
+	  if (Mfull[ip*np + ip_nbr] > 1e-8) {
 	    if (iter == 0) 
 	      ++nbopa_i[ip+1];
 	    else {
@@ -536,24 +529,22 @@ public:
 	nbopa_i[0] = 0;	
       }
     }
-    
+        
     delete[] Mfull;
-    
     /*
+    cout << triVec[0].area << endl;
     FOR_IP {
-      rho_error[ip] = 0.0;
       int nbopa_f = nbopa_i[ip];
       int nbopa_l = nbopa_i[ip+1];
-      cout << ip << " ";
+      cout << ip << " | ";
       for (int inbopa = nbopa_f; inbopa < nbopa_l; ++inbopa) {
 	const int ip_nbr = nbopa_v[inbopa];
-	cout << M[inbopa] << "   ";
-	rho_error[ip] += M[inbopa];
+	cout << ip_nbr << " > " << M[inbopa] << "   ";
       }
       cout << endl;
       getchar();
     }
-    */   
+    */  
 
   }
 
@@ -601,7 +592,7 @@ public:
   }
 
   void updateVol() {
-
+    
    FOR_IP volp[ip] = 0.0;
 
     FOR_IT {    
@@ -610,72 +601,17 @@ public:
 	for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
 	       ib != triVec[it].basisList[iq].end(); ++ib) {
 	  const int ip = ib->ip;
+	  assert(ip < np);
+	  //assert(fabs(ib->phi - 1.0/3.0) < 1e-7);
 	  volp[ip] += weight*ib->phi;
 	}
       }
     }
-	
-
-    /*
-    for (int i = 0; i < ncells; ++i) {
-      for (int j = 0; j < ncells; ++j) {
-	for (typename list<Point>::iterator il = cells[i + ncells*j].begin(); il != cells[i + ncells*j].end(); ++il) {
-	  il->tmp = 0.0;
-	}
-      }
-    }
-
-    FOR_IT {
-    triVec[it].updateVeX(xp);
-      triVec[it].calcArea();
-
-      FOR_IQ {
-	double xquad[2] = {0.0, 0.0};
-	FOR_I2 FOR_IVE xquad[i] += triVec[it].ve_x[ive][i]*quad.ve_wgt[iq][ive];
-	
-	int icell, jcell;
-	findCell(icell, jcell, xquad);
-	
-	const double lambda[2] = {triVec[it].lambda[iq][0],triVec[it].lambda[iq][1]};
-	const double weight = quad.p_wgt[iq]*triVec[it].area/triVec[it].denom[iq];
-	
-        #pragma omp parallel for collapse(2)
-	for (int ivar = -1; ivar <= 1; ++ivar) {
-	  for (int jvar = -1; jvar <= 1; ++jvar) {
-	    const int this_icell = icell + ivar;
-	    const int this_jcell = jcell + jvar;
-	    for (typename list<Point>::iterator il = cells[this_icell + ncells*this_jcell].begin(); il != cells[this_icell + ncells*this_jcell].end(); ++il) {
-	      il->tmp += weight*evalExp(xquad, il->x, lambda);
-	    }
-	  }
-	}
-	
-      }
-    }
         
-    FOR_IP volp[ip] = 0.0;
-
-    for (int i = 0; i < ncells; ++i) {
-      for (int j = 0; j < ncells; ++j) {
-	for (typename list<Point>::iterator il = cells[i + ncells*j].begin(); il != cells[i + ncells*j].end(); ++il) {
-	  volp[il->ip] += il->tmp;
-	}
-      }
-    }
-    
     double vol_sum = 0.0;
     FOR_IP vol_sum += volp[ip];
     assert( fabs(vol_sum - (XMAX-XMIN)*(YMAX-YMIN)) < 1e-9); 
     //cout << "vol_sum: " << vol_sum << endl;
-    */
-    /*
-    FOR_IP volp[ip] = 0.0;
-    FOR_IT {
-      triVec[it].updateVeX(xp);
-      triVec[it].calcArea();
-      FOR_IVE volp[triVec[it].ve_ip[ive]] += triVec[it].area/3.0;
-    }
-    */
   }
 
   
@@ -731,7 +667,7 @@ public:
 		      (HYPRE_Vector)b, (HYPRE_Vector)x);
     
     HYPRE_IJVectorGetValues(xij,np,rows,rhop);
-   
+    
     double error = 0.0;
     FOR_IP {
       double this_mp = 0.0;
@@ -754,21 +690,20 @@ public:
     
     FOR_IT {
       FOR_IQ {
-	double xquad[2] = {0.0, 0.0};
-	FOR_I2 FOR_IVE xquad[i] += triVec[it].ve_x[ive][i]*quad.ve_wgt[iq][ive];
-
 	double this_rho = 0.0;
 	for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
 	       ib != triVec[it].basisList[iq].end(); ++ib) {
 	  const int ip = ib->ip;
-	  this_rho += rhop[ip]*ib->phi;
+	  this_rho += rhop[ip]*(ib->phi);
 	}
-	const double weight = quad.p_wgt[iq]*triVec[it].area;
 	
+	//const double this_p = pEOS(this_rho);
+	const double this_p = pow(this_rho, gam);
+	const double weight = quad.p_wgt[iq]*triVec[it].area;
 	for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
 	       ib != triVec[it].basisList[iq].end(); ++ib) {
 	  const int ip = ib->ip;
-	  rhs[ip] += weight*ib->phi*pEOS(this_rho);
+	  rhs[ip] += weight*(ib->phi)*this_p;
 	}
       }
     }
@@ -777,8 +712,7 @@ public:
     HYPRE_IJVectorSetValues(bij,np,rows,rhs);
     HYPRE_IJVectorAssemble(bij);
     HYPRE_IJVectorGetObject(bij,(void **) &b);
-    delete[] rhs;
-
+    
     HYPRE_IJVectorInitialize(xij);
     HYPRE_IJVectorSetValues(xij,np,rows,pp);
     HYPRE_IJVectorAssemble(xij);
@@ -795,7 +729,20 @@ public:
     HYPRE_IJMatrixDestroy(Aij);
     HYPRE_IJMatrixCreate(mpi_comm, 0, np, 0, np, &Aij);
     HYPRE_IJMatrixSetObjectType(Aij, HYPRE_PARCSR);
-    
+
+    double error = 0.0;
+    FOR_IP {
+      double this_rhs = 0.0;
+      int nbopa_f = nbopa_i[ip];
+      int nbopa_l = nbopa_i[ip+1];
+      for (int inbopa = nbopa_f; inbopa < nbopa_l; ++inbopa) {
+	const int ip_nbr = nbopa_v[inbopa];
+	this_rhs += M[inbopa]*pp[ip_nbr];
+      }
+      error += (this_rhs - rhs[ip])*(this_rhs - rhs[ip]);
+    }
+    assert(error < 1e-7);    
+    delete[] rhs;
   }
 
   void solveForU() {
@@ -977,7 +924,7 @@ public:
     for (int i = 0; i < nx; ++i) {
       for (int j = 0; j < ny; ++j) {
 	xp[i*ny + j][0] = XMIN + i*dx + 0.5*dx - 0.5*(j%2)*dx;
-	xp[i*ny + j][1] = YMIN + j*dy + 0.5*dy;// - 0.5*(i%2)*dy;
+	xp[i*ny + j][1] = YMIN + j*dy + 0.5*dy; //- 0.5*(i%2)*dy;
       }
     }
     
@@ -1181,8 +1128,8 @@ public:
       triVec[it].updateVeX(xp);
       triVec[it].calcArea();
     }
-    //if (step == 0)
-    flipEdges();
+    if (step == 0)
+      flipEdges();
     
   }
 
@@ -1368,6 +1315,8 @@ public:
 	  this_basis.index = 0;
 	  this_basis.ip = triVec[it].ve_ip[0];
 	  this_basis.phi = phi0;
+	  this_basis.grad_phi[0] = (triVec[it].ve_x[1][1] - triVec[it].ve_x[2][1])/denom;
+	  this_basis.grad_phi[1] = (triVec[it].ve_x[2][0] - triVec[it].ve_x[1][0])/denom;
 	  triVec[it].basisList[iq].push_back(this_basis);
 	}
 	const double phi1 = ( (triVec[it].ve_x[2][1] - triVec[it].ve_x[0][1])*(xquad[0] - triVec[it].ve_x[2][0])
@@ -1377,6 +1326,8 @@ public:
 	  this_basis.index = 1;
 	  this_basis.ip = triVec[it].ve_ip[1];
 	  this_basis.phi = phi1;
+	  this_basis.grad_phi[0] = (triVec[it].ve_x[2][1] - triVec[it].ve_x[0][1])/denom;
+	  this_basis.grad_phi[1] = (triVec[it].ve_x[0][0] - triVec[it].ve_x[2][0])/denom;
 	  triVec[it].basisList[iq].push_back(this_basis);
 	}
 	
@@ -1385,9 +1336,13 @@ public:
 	  this_basis.index = 2;
 	  this_basis.ip = triVec[it].ve_ip[2];
 	  this_basis.phi = 1.0 - phi0 - phi1;
+	  this_basis.grad_phi[0] = (triVec[it].ve_x[0][1] - triVec[it].ve_x[1][1])/denom;
+	  this_basis.grad_phi[1] = (triVec[it].ve_x[1][0] - triVec[it].ve_x[0][0])/denom;
 	  triVec[it].basisList[iq].push_back(this_basis);
 	}
 	
+	//cout << phi0 << " " << phi1 << endl;
+		
 	/*
 	cout << xquad[0] << " " << xquad[1] << endl;
 	cout << triVec[it].ve_x[0][0] << " " << triVec[it].ve_x[0][1] << endl;
@@ -1735,8 +1690,8 @@ public:
       double exact_dp[2];
       calcEulerVortex(exact_rho, exact_u, exact_p, exact_dp, xp[ip]);
 
-      //FOR_I2 rhs_x[ip][i] = up[ip][i];
-      FOR_I2 rhs_x[ip][i] = exact_u[i];
+      FOR_I2 rhs_x[ip][i] = up[ip][i];
+      //FOR_I2 rhs_x[ip][i] = exact_u[i];
     }
     FOR_IP FOR_I2 rhs_gp[ip][i] = 0.0;
     FOR_IP        rhs_ep[ip]    = 0.0;
@@ -1990,8 +1945,8 @@ public:
     const double rc = 1.0;
   
     // circulation parameter...
-    const double e_twopi = 0.08; // normal
-    //const double e_twopi = 0.16;
+    //const double e_twopi = 0.08; // normal
+    const double e_twopi = 0.5;
     
     // setup...
     const double coeff = 0.5*e_twopi*e_twopi*(gam-1.0)*Ma_inf*Ma_inf;

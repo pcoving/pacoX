@@ -1,7 +1,7 @@
 #include "paco.hpp"
 
 template <int NQUAD>
-class MyPaco : public Paco<37> {
+class MyPaco : public Paco<175> {
 public:
 
   double M_init;
@@ -12,7 +12,7 @@ public:
   MyPaco() {
     cout << "MyPaco()" << endl;
 
-    assert(NQUAD == 37);
+    assert(NQUAD == 175);
   }
   
   void initialHook() {
@@ -114,14 +114,13 @@ public:
     
     cout << " > time, mass, momentum, energy: " << time << " " << this_M - M_init << " " << this_G[0] - G_init[0] << " " << this_G[1] - G_init[1] << " " << this_E - E_init  << endl;
     
-  }
-  
+  }  
 
 };
 
 int main(int argc,char * argv[]) {
   
-  MyPaco<37> * solver = new MyPaco<37>;
+  MyPaco<175> * solver = new MyPaco<175>;
   solver->init();
   solver->run();
   
