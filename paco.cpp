@@ -11,7 +11,6 @@ public:
 
   MyPaco() {
     cout << "MyPaco()" << endl;
-
     assert(NQUAD == 175);
   }
   

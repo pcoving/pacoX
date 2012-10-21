@@ -1,3 +1,6 @@
+// TODO: symmterize rhs in order to get machine precision energy conservation
+// verify basis functions - why do asymmetries appear?
+
 #include <iostream>
 #include <vector>
 #include <list>
@@ -250,7 +253,7 @@ public:
   }
 
   void setDt() {
-    dt = 0.05;
+    dt = 0.1;
   }
 
   void initLinearSolver() {
@@ -286,7 +289,7 @@ public:
   void init() {
     cout << "init()" << endl;
     
-    nsteps = 100;
+    nsteps = 800;
     check_interval = 1;
     write_interval = 1;
             
@@ -299,7 +302,7 @@ public:
       for (int j = 0; j < ncells; ++j) 
 	cells.push_back(cell_list);
     
-    buildCartMesh(15, 16);   
+    buildCartMesh(31, 32);   
     //buildCartMesh(31, 32);   
 
     //assert(Mp == NULL);        
@@ -335,11 +338,12 @@ public:
 
     repairTris(); 
     updateCells();
-    initPhisFromDelaunay();
-    updatePhis();  
-    updateVol();
-
+    
     cout << "np: " << np << " ntris: " << triVec.size() << " nquad: " << NQUAD << endl;
+    initPhisFromDelaunay();
+    updatePhisOMP();  
+    updateVol();
+   
     
     initialHook();
     
@@ -384,7 +388,7 @@ public:
   void updateAfterAdvect() {
     repairTris();
     initPhisFromDelaunay();
-    updatePhis();
+    updatePhisOMP();
     
     updateVol();
 
@@ -392,10 +396,8 @@ public:
     solveForRho();
     solveForP();
     
-
     buildMomentumMatrix();   
     solveForU();
-    
   }
   
   void writeLp(char * filename) {
@@ -684,6 +686,7 @@ public:
        
   }
 
+  
   void solveForP() {
     double * rhs = new double[np];
     FOR_IP rhs[ip] = 0.0;
@@ -765,7 +768,7 @@ public:
       }
     }
     assert(count == nbopa_s);
-
+    
     HYPRE_IJMatrixInitialize(Aij);
     HYPRE_IJMatrixSetValues(Aij,nrows,ncols,rows,cols,M);
     HYPRE_IJMatrixAssemble(Aij);
@@ -923,8 +926,8 @@ public:
     xp = new double[np][2];
     for (int i = 0; i < nx; ++i) {
       for (int j = 0; j < ny; ++j) {
-	xp[i*ny + j][0] = XMIN + i*dx + 0.5*dx - 0.5*(j%2)*dx;
-	xp[i*ny + j][1] = YMIN + j*dy + 0.5*dy; //- 0.5*(i%2)*dy;
+	xp[i*ny + j][0] = XMIN + i*dx + 0.5*dx; // - 0.5*(j%2)*dx;
+	xp[i*ny + j][1] = YMIN + j*dy + 0.5*dy; // //- 0.5*(i%2)*dy;
       }
     }
     
@@ -1128,8 +1131,8 @@ public:
       triVec[it].updateVeX(xp);
       triVec[it].calcArea();
     }
-    if (step == 0)
-      flipEdges();
+    //if (step == 0)
+    flipEdges();
     
   }
 
@@ -1492,8 +1495,8 @@ public:
 	  
 	  // compute step size...
 	  double step = 1.0;	  
+	  double normsq = 0.0;
 	  {
-	    double normsq = 0.0;
 	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
 		 ib != triVec[it].basisList[iq].end(); ++ib) {
 	      const int ii = ib->index;
@@ -1552,8 +1555,12 @@ public:
 	    }
 	    
 	    //cout << "lambda: " << min_lambda << endl;
-	    if (min_lambda > -1e-10) {
+	    if (min_lambda > -1e-8) {
 	      done = true;
+	      if (normsq > 1e-8) {
+		cout << normsq << " " << step << endl;
+		//getchar();
+	      }
 	      //cout << "done!" << endl;
 	    }
 	    else {
@@ -1575,7 +1582,7 @@ public:
 	  */
 	  
 	  ++iter;
-	  if (iter > 200) {
+	  if (iter > 300) {
 	    cout << " iter > max iter!!!! : " << it << " " << iq << endl;
 	    getchar();
 	    done = true;
@@ -1652,52 +1659,311 @@ public:
     delete[] xp_trans;
     
   }
-  
-  /*
-  void calcRhsX(double (*rhs_x)[2]) {
-    
-    #pragma omp parallel for 
-    FOR_IP {
-      FOR_I2 rhs_x[ip][i] = 0.0;
-
-      int icell, jcell;
-      findCell(icell, jcell, xp[ip]);
-    
-      const double coeff = 1.0/denomp[ip];
-      const double lambda[2] = {lambdap[ip][0], lambdap[ip][1]};
-
-      for (int ivar = -1; ivar <= 1; ++ivar) {
-	for (int jvar = -1; jvar <= 1; ++jvar) {
-	  const int this_icell = icell + ivar;
-	  const int this_jcell = jcell + jvar;
-	  for (typename list<Point>::iterator il = cells[this_icell + ncells*this_jcell].begin(); il != cells[this_icell + ncells*this_jcell].end(); ++il) {
-	    FOR_I2 rhs_x[ip][i] += coeff*up[il->ip][i]*evalExp(xp[ip], il->x, lambda);
-	  }
-	}
-      }
       
+  void updatePhisOMP() {
+    cout << "updatePhisOMP() " << endl;
+
+    #pragma omp parallel for
+    FOR_IT {
+      FOR_IQ {
+	//cout << it << " " << iq << endl;
+	double xquad[2] = {0.0, 0.0};
+	FOR_I2 FOR_IVE xquad[i] += triVec[it].ve_x[ive][i]*quad.ve_wgt[iq][ive];
+	//cout << "xquad: " << xquad[0] << " " << xquad[1] << endl;
+	
+	double (*xp_trans)[2] = new double[np][2];
+	FOR_IP {
+	  FOR_I2 xp_trans[ip][i] = xp[ip][i];
+	  if ((xquad[0] - xp_trans[ip][0]) > 0.5*(XMAX-XMIN)) {
+	    xp_trans[ip][0] += (XMAX-XMIN);
+	  }
+	  else if ((xp_trans[ip][0] - xquad[0]) > 0.5*(XMAX-XMIN)) {
+	    xp_trans[ip][0] -= (XMAX-XMIN);
+	  }
+	  if ((xquad[1] - xp_trans[ip][1]) > 0.5*(YMAX-YMIN)) {
+	    xp_trans[ip][1] += (YMAX-YMIN);
+	  }
+	  else if ((xp_trans[ip][1] - xquad[1]) > 0.5*(YMAX-YMIN)) {
+	    xp_trans[ip][1] -= (YMAX-YMIN);
+	  }	  
+	}
+	
+	bool done = false;
+	int iter = 0;
+	while (!done) {
+	  	    
+	  int nactive = triVec[it].basisList[iq].size();
+	  assert(nactive > 1);
+	  
+	  double * A = new double[(nactive+1)*(nactive+1)]; // collumn major!!! (though symmteric, so doesn't matter for now...)
+	  double * A2 = new double[(nactive+1)*(nactive+1)];
+	  double * b = new double[nactive+1];
+	  for (int ii = 0; ii < nactive; ++ii) b[ii] = 0.0;
+	  
+	  for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+	       ib != triVec[it].basisList[iq].end(); ++ib) {
+	    const int ip = ib->ip;
+	    const int ii = ib->index;
+	    for (typename list<Basis>::iterator jb = triVec[it].basisList[iq].begin(); 
+		 jb != triVec[it].basisList[iq].end(); ++jb) {
+	      const int jp = jb->ip;
+	      const int jj = jb->index;
+	      const double dist = sqrt((xp_trans[ip][0] - xp_trans[jp][0])*(xp_trans[ip][0] - xp_trans[jp][0]) +
+				       (xp_trans[ip][1] - xp_trans[jp][1])*(xp_trans[ip][1] - xp_trans[jp][1]));
+	      A[ii*(nactive+1) + jj] = -dist;
+	      b[ii] += dist*(jb->phi);
+	    }
+	    A[ii*(nactive+1) + ii] = 0.0; // diagonal
+	    // lagrange multipliers..
+	    A[ii*(nactive+1) + nactive] = 1.0;
+	    A[nactive*(nactive+1) + ii] = 1.0;
+	    
+	    // distance to active set...
+	    b[ii] -= sqrt((xp_trans[ip][0] - xquad[0])*(xp_trans[ip][0] - xquad[0]) +
+			  (xp_trans[ip][1] - xquad[1])*(xp_trans[ip][1] - xquad[1]));
+	  }
+	
+	  A[(nactive+1)*(nactive+1) - 1] = 0.0;
+	  b[nactive] = 0.0;
+	    
+	  for (int ii = 0; ii < (nactive+1)*(nactive+1); ++ii) A2[ii] = A[ii];
+	  double * b2 = new double[nactive+1];
+	  for (int ii = 0; ii < (nactive+1); ++ii) b2[ii] = b[ii];
+	  
+	  {
+	    int nrhs = 1;
+	    int N = nactive+1;
+	    int * ipiv = new int[N];
+	    int info;	    
+	    dgesv_(&N, &nrhs, A, &N, ipiv,
+		   b, &N, &info);
+	    if (info != 0) {
+	      cout << "info: " << info << endl;
+	      cout << "A2: " << endl;
+	      for (int ii = 0; ii < nactive+1; ++ii) {
+		cout << ii << " | ";
+		for (int jj = 0; jj < nactive+1; ++jj) {
+		  cout << A2[ii*(nactive+1) + jj] << " ";
+		}
+		cout << endl;
+	      }
+	      
+	      cout << "phi: " << endl;
+	      for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		   ib != triVec[it].basisList[iq].end(); ++ib)  
+		cout << ib->phi << " ";
+	      cout << endl;
+	      
+	      cout << "b2: " << endl;
+	      for (int ii = 0; ii < nactive+1; ++ii) cout << b2[ii] << " ";
+	      cout << endl;
+	      getchar();
+	    }
+	    //assert(info == 0);
+	  
+	    delete[] ipiv;
+	  }
+	  delete[] b2;
+	  
+	  const double nu = b[nactive];
+	  
+	  // compute step size...
+	  double step = 1.0;	  
+	  double normsq = 0.0;
+	  {
+	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		 ib != triVec[it].basisList[iq].end(); ++ib) {
+	      const int ii = ib->index;
+	      assert(ii < nactive);
+	      normsq += b[ii]*b[ii];
+	      if (b[ii] < 0.0) {
+		step = min(step, -(ib->phi)/b[ii]);
+	      }
+	    }
+	    if (normsq < 1e-8) {
+	      step = 0.0;
+	    }
+	  }
+	  
+	  //cout << "step: " << step << endl;
+	  
+	  if (step > 0.0) {
+	    list<Basis>::iterator ib = triVec[it].basisList[iq].begin();
+	    while (ib != triVec[it].basisList[iq].end()) {
+	      const int ii = ib->index;
+	      ib->phi += step*b[ii];
+	      if (ib->phi < 1e-10) {
+		ib = triVec[it].basisList[iq].erase(ib);
+	      }
+	      else {
+		++ib;
+	      }
+	    }
+	    int index = 0;
+	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		 ib != triVec[it].basisList[iq].end(); ++ib) {
+	      ib->index = index;
+	      ++index;
+	    }
+	  }
+	  else {
+	    double min_lambda = 0.0;
+	    int min_ip = -1;
+	    for (int ip = 0; ip < np; ++ip) {
+	      double lambda = nu + sqrt((xp_trans[ip][0] - xquad[0])*(xp_trans[ip][0] - xquad[0]) +
+					(xp_trans[ip][1] - xquad[1])*(xp_trans[ip][1] - xquad[1]));
+	      bool active = false;
+	      for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		   ib != triVec[it].basisList[iq].end(); ++ib) {
+		lambda -= ib->phi*sqrt((xp_trans[ib->ip][0] - xp_trans[ip][0])*(xp_trans[ib->ip][0] - xp_trans[ip][0]) +
+				       (xp_trans[ib->ip][1] - xp_trans[ip][1])*(xp_trans[ib->ip][1] - xp_trans[ip][1]));
+		if (ip == ib->ip) {
+		  active = true;
+		  break;
+		}
+	      }
+	      if (lambda < min_lambda && !active) {
+		min_lambda = lambda;
+		min_ip = ip;
+	      }
+	    }
+	    
+	    //cout << "lambda: " << min_lambda << endl;
+	    if (min_lambda > -1e-8) {
+	      done = true;
+	      if (normsq > 1e-8) {
+		cout << normsq << " " << step << endl;
+		//getchar();
+	      }
+	      //cout << "done!" << endl;
+	    }
+	    else {
+	      Basis this_basis;
+	      this_basis.index = nactive;
+	      assert(min_ip >= 0);
+	      this_basis.ip = min_ip;
+	      this_basis.phi = 0.0;
+	      triVec[it].basisList[iq].push_back(this_basis);
+	    }
+	  }
+	  
+	  ++iter;
+	  if (iter > 300) {
+	    cout << " iter > max iter!!!! : " << it << " " << iq << endl;
+	    getchar();
+	    done = true;
+	  }
+	  
+	  // compute gradients...
+	  if (done) {
+	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		   ib != triVec[it].basisList[iq].end(); ++ib) {
+	      const int ii = ib->index;
+	      b[ii] = (xp_trans[ib->ip][0] - xquad[0])/sqrt((xp_trans[ib->ip][0] - xquad[0])*(xp_trans[ib->ip][0] - xquad[0]) +
+							     (xp_trans[ib->ip][1] - xquad[1])*(xp_trans[ib->ip][1] - xquad[1]));
+	    }
+	    b[nactive] = 0.0;
+	    
+	    for (int ii = 0; ii < (nactive+1)*(nactive+1); ++ii) A[ii] = A2[ii];
+	    {
+	      int nrhs = 1;
+	      int N = nactive+1;
+	      int * ipiv = new int[N];
+	      int info;	    
+	      dgesv_(&N, &nrhs, A, &N, ipiv,
+		     b, &N, &info);
+	      assert(info == 0);
+	      delete[] ipiv;
+	    }
+	    
+	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		   ib != triVec[it].basisList[iq].end(); ++ib) {
+	      const int ii = ib->index;
+	      ib->grad_phi[0] = b[ii]; 
+	    }
+	    
+	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		   ib != triVec[it].basisList[iq].end(); ++ib) {
+	      const int ii = ib->index;
+	      b[ii] = (xp_trans[ib->ip][1] - xquad[1])/sqrt((xp_trans[ib->ip][0] - xquad[0])*(xp_trans[ib->ip][0] - xquad[0]) +
+							     (xp_trans[ib->ip][1] - xquad[1])*(xp_trans[ib->ip][1] - xquad[1]));
+	    }
+	    b[nactive] = 0.0;
+	    	    
+	    for (int ii = 0; ii < (nactive+1)*(nactive+1); ++ii) A[ii] = A2[ii];
+	    {
+	      int nrhs = 1;
+	      int N = nactive+1;
+	      int * ipiv = new int[N];
+	      int info;	    
+	      dgesv_(&N, &nrhs, A, &N, ipiv,
+		     b, &N, &info);
+	      assert(info == 0);
+	      delete[] ipiv;
+	    }
+	    
+	    for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+		   ib != triVec[it].basisList[iq].end(); ++ib) {
+	      const int ii = ib->index;
+	      ib->grad_phi[1] = b[ii]; 
+	    }
+	  }
+	  
+	  delete[] A;
+	  delete[] A2;
+	  delete[] b;
+	  
+	}
+	
+	// compute gradients down here eventually, only call solver once...
+	delete[] xp_trans;
+	
+      }
     }
     
+        
   }
-*/
+  
   void calcRhs(double (*rhs_x)[2], double (*rhs_gp)[2], double * rhs_ep) {
     cout << "calcRhs()" << endl;
     
+    // compute filtered advection velocity...
+    double (*u_advect)[2] = new double[np][2];
+    double * vol = new double[np];
+    FOR_IP FOR_I2 u_advect[ip][i] = 0.0;
+    FOR_IP vol[ip] = 0.0;
+    FOR_IT {
+      FOR_IQ {
+	double this_u[2] = {0.0, 0.0};
+	for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+	     ib != triVec[it].basisList[iq].end(); ++ib) {
+	  const int ip = ib->ip;
+	  FOR_I2 this_u[i] += up[ip][i]*(ib->phi);
+	}
+	
+	const double weight = quad.p_wgt[iq]*triVec[it].area;
+	for (typename list<Basis>::iterator ib = triVec[it].basisList[iq].begin(); 
+	       ib != triVec[it].basisList[iq].end(); ++ib) {
+	  const int ip = ib->ip;
+	  FOR_I2 u_advect[ip][i] += weight*(ib->phi)*this_u[i];
+	  vol[ip] += weight*(ib->phi);
+	}
+      }
+    }
+    FOR_IP FOR_I2 u_advect[ip][i] /= vol[ip];
+
     // since basis interpolatory, rhs is just nodal values...
     FOR_IP {
-      double exact_rho, exact_p;
-      double exact_u[2];
-      double exact_dp[2];
-      calcEulerVortex(exact_rho, exact_u, exact_p, exact_dp, xp[ip]);
-
-      FOR_I2 rhs_x[ip][i] = up[ip][i];
-      //FOR_I2 rhs_x[ip][i] = exact_u[i];
+      //FOR_I2 rhs_x[ip][i] = up[ip][i];
+      FOR_I2 rhs_x[ip][i] = u_advect[ip][i];
     }
+    delete[] u_advect;
+    delete[] vol;
+
     FOR_IP FOR_I2 rhs_gp[ip][i] = 0.0;
     FOR_IP        rhs_ep[ip]    = 0.0;
-    // XXXXX may need to explicitly symmetrerize?
-    // calc momentum rhs...
     
+    // calc momentum rhs...
     FOR_IT {
       FOR_IQ {
 	/*
@@ -1718,8 +1984,11 @@ public:
 	  for (typename list<Basis>::iterator jb = triVec[it].basisList[iq].begin(); 
 	       jb != triVec[it].basisList[iq].end(); ++jb) {
 	    const int jp = jb->ip;
-	    FOR_I2 rhs_gp[jp][i] -= weight*(jb->phi)*pp[ip]*(ib->grad_phi[i]);
-	    //FOR_I2 rhs_gp[jp][i] += weight*
+	    FOR_I2 rhs_gp[ip][i] -= weight*(ib->phi)*pp[jp]*(jb->grad_phi[i]);
+	    //FOR_I2 rhs_gp[ip][i] -= weight*(jb->phi)*pp[jp]*(ib->grad_phi[i]);
+	    //cout << (jb->phi)*(ib->grad_phi[0]) << " " << (ib->phi)*(jb->grad_phi[0]) << " " << (jb->phi)*(ib->grad_phi[1]) << " " << (ib->phi)*(jb->grad_phi[1]) << endl; 
+	    //getchar();
+	    //FOR_I2 rhs_gp[ip][i] += 0.5*(pp[ip] + pp[jp])*weight*(-(jb->phi)*(ib->grad_phi[i]) - (ib->phi)*(jb->grad_phi[i]));
 	  }
 	}
       }
@@ -1747,8 +2016,8 @@ public:
     char filename[32];
     sprintf(filename,"tri.%08d.dat",step);
     writeTri(filename);
-    sprintf(filename,"lp.%08d.dat",step);
-    writeLp(filename);
+    //sprintf(filename,"lp.%08d.dat",step);
+    //writeLp(filename);
 
     bool done = false;
     while(!done) {
@@ -1790,8 +2059,8 @@ public:
 	char filename[32];
 	sprintf(filename,"tri.%08d.dat",step);
 	writeTri(filename);
-	sprintf(filename,"lp.%08d.dat",step);
-	writeLp(filename);
+	//sprintf(filename,"lp.%08d.dat",step);
+	//writeLp(filename);
       }
       
       if (step >= nsteps) done = true;
@@ -1945,8 +2214,8 @@ public:
     const double rc = 1.0;
   
     // circulation parameter...
-    //const double e_twopi = 0.08; // normal
-    const double e_twopi = 0.5;
+    const double e_twopi = 0.08; // normal
+    //const double e_twopi = 0.5;
     
     // setup...
     const double coeff = 0.5*e_twopi*e_twopi*(gam-1.0)*Ma_inf*Ma_inf;
